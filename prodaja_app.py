@@ -5,9 +5,9 @@ from datetime import date
 import urllib.parse
 
 # --- 1. PODEŠAVANJE ---
-st.set_page_config(page_title="Poslovni Panel v6.3", layout="wide")
+st.set_page_config(page_title="Poslovni Panel v6.4", layout="wide")
 
-# --- 2. POVEZIVANJE (Secrets) ---
+# --- 2. POVEZIVANJE ---
 try:
     db_pass = st.secrets["DB_PASSWORD"]
     p_ref = st.secrets["PROJECT_REF"]
@@ -28,13 +28,31 @@ def citaj(tabela, order_by=None):
     if order_by: upit += f" ORDER BY {order_by}"
     return pd.read_sql(upit, engine)
 
-# Inicijalizacija svih tabela
+# --- 4. BAZA AUTO-FIX (Dodavanje kolona koje fale) ---
 izvrsi("CREATE TABLE IF NOT EXISTS kupci (id SERIAL PRIMARY KEY, ime TEXT, grad TEXT, okrug TEXT, rabat REAL)")
 izvrsi("CREATE TABLE IF NOT EXISTS tipovi_robe (id SERIAL PRIMARY KEY, naziv TEXT UNIQUE)")
 izvrsi("CREATE TABLE IF NOT EXISTS kuriri (id SERIAL PRIMARY KEY, naziv TEXT UNIQUE, cena REAL)")
-izvrsi("CREATE TABLE IF NOT EXISTS prodaja (id SERIAL PRIMARY KEY, datum TEXT, kupac_info TEXT, roba TEXT, komada INTEGER, bruto REAL, neto REAL, okrug TEXT, prevoz TEXT, kurir TEXT)")
+izvrsi("CREATE TABLE IF NOT EXISTS prodaja (id SERIAL PRIMARY KEY, datum TEXT)")
 
-# --- 4. GEOGRAFIJA SRBIJE ---
+# Provera i dodavanje kolona u 'prodaja' ako ne postoje
+kolone_za_dodavanje = {
+    "kupac_info": "TEXT",
+    "roba": "TEXT",
+    "komada": "INTEGER",
+    "bruto": "REAL",
+    "neto": "REAL",
+    "okrug": "TEXT",
+    "prevoz": "TEXT",
+    "kurir": "TEXT"
+}
+
+for kolona, tip in kolone_za_dodavanje.items():
+    try:
+        izvrsi(f"ALTER TABLE prodaja ADD COLUMN {kolona} {tip}")
+    except Exception:
+        pass # Kolona već postoji, idemo dalje
+
+# --- 5. GEOGRAFIJA ---
 SRBIJA_MAPA = {
     "Severnobački": ["Subotica", "Bačka Topola", "Mali Iđoš"],
     "Srednjebanatski": ["Zrenjanin", "Novi Bečej", "Sečanj", "Žitište", "Nova Crnja"],
@@ -65,7 +83,7 @@ SRBIJA_MAPA = {
 }
 SVI_GRADOVI = sorted([g for lista in SRBIJA_MAPA.values() for g in lista])
 
-# --- 5. DIJALOZI ---
+# --- 6. DIJALOZI ---
 @st.dialog("Izmeni Kupca")
 def izmeni_kupca_dialog(row):
     novo_ime = st.text_input("Ime firme", value=row['ime'])
@@ -77,13 +95,6 @@ def izmeni_kupca_dialog(row):
                {"i": novo_ime, "g": novi_grad, "o": n_okrug, "r": novi_rabat, "id": row['id']})
         st.rerun()
 
-@st.dialog("Izmeni Artikal")
-def izmeni_robu_dialog(row):
-    novi_naziv = st.text_input("Naziv artikla", value=row['naziv'])
-    if st.button("Sačuvaj"):
-        izvrsi("UPDATE tipovi_robe SET naziv=:n WHERE id=:id", {"n": novi_naziv, "id": row['id']})
-        st.rerun()
-
 @st.dialog("Izmeni Kurira")
 def izmeni_kurira_dialog(row):
     n_naziv = st.text_input("Služba", value=row['naziv'])
@@ -92,7 +103,7 @@ def izmeni_kurira_dialog(row):
         izvrsi("UPDATE kuriri SET naziv=:n, cena=:c WHERE id=:id", {"n": n_naziv, "c": n_cena, "id": row['id']})
         st.rerun()
 
-# --- 6. LOGIN ---
+# --- 7. LOGIN ---
 if "auth" not in st.session_state: st.session_state["auth"] = False
 if not st.session_state["auth"]:
     st.title("🔐 Ulaz")
@@ -102,7 +113,7 @@ if not st.session_state["auth"]:
         else: st.error("Pogrešna lozinka!")
     st.stop()
 
-# --- 7. NAVIGACIJA ---
+# --- 8. NAVIGACIJA ---
 meni = st.sidebar.radio("Navigacija:", ["📊 Pregled", "📝 Nova Faktura", "👥 Kupci", "📦 Katalog Robe", "🚚 Brza Pošta"])
 
 # --- MODUL: PREGLED ---
@@ -115,7 +126,7 @@ if meni == "📊 Pregled":
         c2.metric("Broj Faktura", len(df_p))
         c3.metric("Prodato Komada", int(df_p['komada'].sum()))
         st.subheader("📜 Zadnje Fakture")
-        st.dataframe(df_p[['datum', 'kupac_info', 'roba', 'komada', 'neto', 'prevoz', 'kurir']], use_container_width=True)
+        st.dataframe(df_p[['datum', 'kupac_info', 'roba', 'komada', 'neto', 'prevoz', 'kurir']], width='stretch')
     else: st.info("Nema podataka. Unesite prvu fakturu.")
 
 # --- MODUL: NOVA FAKTURA ---
@@ -152,7 +163,7 @@ elif meni == "📝 Nova Faktura":
 # --- MODUL: KUPCI ---
 elif meni == "👥 Kupci":
     st.title("👥 Kupci")
-    tab1, tab2, tab3, tab4 = st.tabs(["➕ Dodaj", "📋 Lista", "📊 Grafikoni", "🗺️ Mapa"])
+    tab1, tab2, tab3 = st.tabs(["➕ Dodaj", "📋 Lista", "📊 Grafikoni"])
     with tab1:
         with st.form("n_k"):
             ime = st.text_input("Ime Firme")
@@ -199,27 +210,22 @@ elif meni == "📦 Katalog Robe":
     for _, row in df_t.iterrows():
         c1, c2, c3 = st.columns([5, 0.5, 0.5])
         c1.write(row['naziv'])
-        if c2.button("✏️", key=f"er_{row['id']}"): izmeni_robu_dialog(row)
         if c3.button("🗑️", key=f"dr_{row['id']}"): izvrsi("DELETE FROM tipovi_robe WHERE id=:id", {"id": row['id']}); st.rerun()
         st.divider()
 
-# --- MODUL: BRZA POŠTA (NOVI FOLDER) ---
+# --- MODUL: BRZA POŠTA ---
 elif meni == "🚚 Brza Pošta":
-    st.title("🚚 Upravljanje Kurirskim Službama")
-    with st.form("n_k"):
-        c_n = st.text_input("Naziv službe (npr. AKS, BEX, PostExpress)")
-        c_c = st.number_input("Standardna cena paketa (RSD)", min_value=0.0)
-        if st.form_submit_button("Sačuvaj Službu"):
+    st.title("🚚 Brza Pošta")
+    with st.form("n_kurir"):
+        c_n = st.text_input("Naziv službe")
+        c_c = st.number_input("Cena paketa (RSD)", min_value=0.0)
+        if st.form_submit_button("Sačuvaj"):
             izvrsi("INSERT INTO kuriri (naziv, cena) VALUES (:n, :c) ON CONFLICT DO NOTHING", {"n": c_n.strip(), "c": c_c})
             st.rerun()
-    
     df_s = citaj("kuriri", "naziv ASC")
-    if not df_s.empty:
-        for _, row in df_s.iterrows():
-            c1, c2, c3, c4 = st.columns([3, 2, 0.5, 0.5])
-            c1.write(row['naziv'])
-            c2.write(f"{row['cena']} RSD")
-            if c3.button("✏️", key=f"es_{row['id']}"): izmeni_kurira_dialog(row)
-            if c4.button("🗑️", key=f"ds_{row['id']}"): izvrsi("DELETE FROM kuriri WHERE id=:id", {"id": row['id']}); st.rerun()
-            st.divider()
-    else: st.info("Niste dodali nijednu službu.")
+    for _, row in df_s.iterrows():
+        c1, c2, c3, c4 = st.columns([3, 2, 0.5, 0.5])
+        c1.write(row['naziv']); c2.write(f"{row['cena']} RSD")
+        if c3.button("✏️", key=f"es_{row['id']}"): izmeni_kurira_dialog(row)
+        if c4.button("🗑️", key=f"ds_{row['id']}"): izvrsi("DELETE FROM kuriri WHERE id=:id", {"id": row['id']}); st.rerun()
+        st.divider()
