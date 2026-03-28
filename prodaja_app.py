@@ -57,4 +57,127 @@ SRBIJA_MAPA = {
     "Rasinski": ["Kruševac", "Aleksandrovac", "Brus", "Varvarin", "Trstenik", "Ćićevac"],
     "Nišavski": ["Niš", "Aleksinac", "Svrljig", "Merošina", "Ražanj", "Doljevac", "Gadžin Han"],
     "Toplički": ["Prokuplje", "Blace", "Kuršumlija", "Žitorađa"],
-    "Pirotski": ["Pirot", "Bela Pal
+    "Pirotski": ["Pirot", "Bela Palanka", "Dimitrovgrad", "Babušnica"],
+    "Jablanički": ["Leskovac", "Vlasotince", "Lebane", "Bojnik", "Medveđa", "Crna Trava"],
+    "Pčinjski": ["Vranje", "Bujanovac", "Preševo", "Surdulica", "Vladičin Han", "Trgovište", "Bosilegrad"],
+    "Kosovski/Metohijski": ["Priština", "Prizren", "Peć", "Kosovska Mitrovica", "Gnjilane", "Đakovica", "Uroševac"],
+    "Grad Beograd": ["Beograd", "Mladenovac", "Lazarevac", "Obrenovac", "Barajevo", "Grocka", "Sopot", "Surčin"]
+}
+SVI_GRADOVI = sorted(list(set([g for lista in SRBIJA_MAPA.values() for g in lista])))
+
+# --- 5. POMOĆNE FUNKCIJE ZA BAZU ---
+def izvrsi(upit, params=None):
+    with engine.begin() as conn:
+        conn.execute(text(upit), params or {})
+
+def citaj(tabela, order_by=None):
+    upit = f"SELECT * FROM {tabela}"
+    if order_by: upit += f" ORDER BY {order_by}"
+    return pd.read_sql(upit, engine)
+
+# Inicijalizacija tabela
+izvrsi("CREATE TABLE IF NOT EXISTS kupci (id SERIAL PRIMARY KEY, ime TEXT, grad TEXT, okrug TEXT, rabat REAL)")
+izvrsi("CREATE TABLE IF NOT EXISTS tipovi_robe (id SERIAL PRIMARY KEY, naziv TEXT UNIQUE)")
+izvrsi("CREATE TABLE IF NOT EXISTS prodaja (id SERIAL PRIMARY KEY, datum TEXT, kupac TEXT, roba TEXT, komada INTEGER, bruto REAL, neto REAL)")
+
+# --- 6. NAVIGACIJA ---
+st.sidebar.title("🏢 Cloud Panel v4.6")
+meni = st.sidebar.radio("Meni:", ["📊 Dashboard", "📝 Nova Faktura", "👥 Kupci", "📦 Katalog Robe"])
+
+# --- MODUL: DASHBOARD ---
+if meni == "📊 Dashboard":
+    st.title("📊 Izveštaji i Analitika")
+    df_p = citaj("prodaja", "datum DESC")
+    if not df_p.empty:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Ukupan Neto (RSD)", f"{df_p['neto'].sum():,.2f}")
+        c2.metric("Broj Faktura", len(df_p))
+        c3.metric("Prodatih Komada", int(df_p['komada'].sum()))
+        
+        st.markdown("---")
+        st.subheader("📦 Prodaja po artiklima (Sumarno)")
+        analitika_robe = df_p.groupby('roba').agg({'komada': 'sum', 'neto': 'sum'}).reset_index().sort_values(by='neto', ascending=False)
+        analitika_robe.columns = ['Naziv Artikla', 'Ukupno Komada', 'Ukupna Vrednost (Neto)']
+        st.table(analitika_robe)
+        
+        st.markdown("---")
+        st.subheader("📜 Istorija svih prodaja")
+        st.dataframe(df_p, use_container_width=True)
+    else:
+        st.info("Baza je trenutno prazna. Unesite prvu prodaju.")
+
+# --- MODUL: NOVA FAKTURA ---
+elif meni == "📝 Nova Faktura":
+    st.title("📝 Unos nove prodaje")
+    df_k = citaj("kupci", "ime ASC")
+    df_t = citaj("tipovi_robe", "naziv ASC")
+    
+    if not df_k.empty and not df_t.empty:
+        with st.form("faktura_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            dat = c1.date_input("Datum", date.today())
+            lista_k = [f"{r['ime']} ({r['grad']})" for i, r in df_k.iterrows()]
+            izabran_k_pun = c1.selectbox("Izaberi Kupca", lista_k)
+            
+            ime_firme = izabran_k_pun.rsplit(" (", 1)[0]
+            tip = c2.selectbox("Roba / Artikal", df_t['naziv'])
+            kom = c2.number_input("Količina (komada)", min_value=1)
+            izn = c1.number_input("Bruto Iznos (RSD)", min_value=0.0)
+            
+            r_val = df_k[df_k['ime'] == ime_firme]['rabat'].values[0]
+            
+            if st.form_submit_button("✅ Sačuvaj Prodaju"):
+                neto_v = izn * (1 - r_val/100)
+                izvrsi("INSERT INTO prodaja (datum, kupac, roba, komada, bruto, neto) VALUES (:d, :k, :r, :ko, :b, :n)",
+                       {"d": str(dat), "k": ime_firme, "r": tip, "ko": kom, "b": izn, "n": neto_v})
+                st.success(f"Snimljeno! Neto iznos: {neto_v:,.2f} RSD")
+    else:
+        st.warning("Prvo popunite kupce i katalog robe.")
+
+# --- MODUL: KUPCI ---
+elif meni == "👥 Kupci":
+    st.title("👥 Baza Kupaca i Geografija")
+    t1, t2 = st.tabs(["➕ Dodaj Kupca", "🔍 Pregled i Brisanje"])
+    
+    with t1:
+        with st.form("novi_k_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            ime_k = c1.text_input("Naziv Firme / Kupca")
+            grad_k = c2.selectbox("Grad", SVI_GRADOVI)
+            rabat_k = c1.number_input("Rabat (%)", min_value=0.0)
+            okrug_k = next((o for o, g in SRBIJA_MAPA.items() if grad_k in g), "Ostalo")
+            
+            if st.form_submit_button("Sačuvaj Kupca"):
+                izvrsi("INSERT INTO kupci (ime, grad, okrug, rabat) VALUES (:i, :g, :o, :r)", 
+                       {"i": ime_k, "g": grad_k, "o": okrug_k, "r": rabat_k})
+                st.success(f"Kupac dodat u {okrug_k} okrug!")
+                st.rerun()
+
+    with t2:
+        df_k = citaj("kupci", "okrug ASC")
+        if not df_k.empty:
+            st.subheader("Distribucija po okruzima")
+            okruzi_count = df_k['okrug'].value_counts()
+            st.bar_chart(okruzi_count)
+            st.dataframe(df_k[['ime', 'grad', 'okrug', 'rabat']], use_container_width=True)
+            k_bris = st.selectbox("Izaberi kupca za brisanje:", df_k['ime'])
+            if st.button("❌ Obriši kupca"):
+                izvrsi("DELETE FROM kupci WHERE ime = :i", {"i": k_bris})
+                st.rerun()
+
+# --- MODUL: KATALOG ROBE ---
+elif meni == "📦 Katalog Robe":
+    st.title("📦 Katalog")
+    with st.form("katalog_form", clear_on_submit=True):
+        n_a = st.text_input("Naziv artikla (Bočna fioka, Džambo šina, Korpa za veš...)")
+        if st.form_submit_button("Dodaj u Katalog"):
+            izvrsi("INSERT INTO tipovi_robe (naziv) VALUES (:n) ON CONFLICT DO NOTHING", {"n": n_a.strip()})
+            st.rerun()
+    
+    df_t = citaj("tipovi_robe", "naziv ASC")
+    st.dataframe(df_t, use_container_width=True)
+    if not df_t.empty:
+        r_bris = st.selectbox("Izaberi artikal za uklanjanje:", df_t['naziv'])
+        if st.button("🗑️ Obriši artikal"):
+            izvrsi("DELETE FROM tipovi_robe WHERE naziv = :n", {"n": r_bris})
+            st.rerun()
