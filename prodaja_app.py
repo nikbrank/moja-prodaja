@@ -5,7 +5,7 @@ from datetime import date
 import urllib.parse
 
 # --- 1. PODEŠAVANJE ---
-st.set_page_config(page_title="Poslovni Panel v7.5", layout="wide")
+st.set_page_config(page_title="Poslovni Panel v7.6", layout="wide")
 
 # --- 2. KONEKCIJA ---
 try:
@@ -18,7 +18,7 @@ try:
 except Exception:
     st.error("Baza nedostupna!"); st.stop()
 
-# --- 3. GEOGRAFIJA (VRAĆENO) ---
+# --- 3. GEOGRAFIJA ---
 SRBIJA_MAPA = {
     "Južnobački": ["Novi Sad", "Bačka Palanka", "Bečej", "Temerin", "Vrbas", "Bački Petrovac", "Beočin", "Titel", "Žabalj", "Srbobran"],
     "Grad Beograd": ["Beograd", "Mladenovac", "Lazarevac", "Obrenovac", "Barajevo", "Grocka", "Sopot", "Surčin"],
@@ -39,30 +39,20 @@ def citaj(tabela, order_by="id ASC"):
     except:
         return pd.DataFrame()
 
-# --- 5. BAZA (SREĐIVANJE TIPOVA) ---
+# --- 5. INICIJALIZACIJA BAZE ---
 def inicijalizacija():
     izvrsi("CREATE TABLE IF NOT EXISTS tipovi_robe (id SERIAL PRIMARY KEY, naziv TEXT UNIQUE)")
     izvrsi("CREATE TABLE IF NOT EXISTS kuriri (id SERIAL PRIMARY KEY, naziv TEXT UNIQUE)")
     izvrsi("CREATE TABLE IF NOT EXISTS kuriri_cene (id SERIAL PRIMARY KEY, kurir_id INTEGER, cena REAL, datum_od DATE)")
     izvrsi("CREATE TABLE IF NOT EXISTS kupci (id SERIAL PRIMARY KEY, ime TEXT, grad TEXT, okrug TEXT, rabat REAL)")
-    izvrsi("CREATE TABLE IF NOT EXISTS prodaja (id SERIAL PRIMARY KEY, datum DATE)")
-
-    kolone = [
-        ("kupac_id", "INTEGER"), ("roba_id", "INTEGER"), ("komada", "INTEGER"),
-        ("bruto", "REAL"), ("neto", "REAL"), ("prevoz_tip", "TEXT"), ("kurir_id", "INTEGER")
-    ]
-    for col, tip in kolone:
-        try:
-            izvrsi(f"ALTER TABLE prodaja ADD COLUMN {col} {tip}")
-        except: pass
-    
+    izvrsi("CREATE TABLE IF NOT EXISTS prodaja (id SERIAL PRIMARY KEY, datum DATE, kupac_id INTEGER, roba_id INTEGER, komada INTEGER, bruto REAL, neto REAL, prevoz_tip TEXT, kurir_id INTEGER)")
     try:
         izvrsi("ALTER TABLE prodaja ALTER COLUMN datum TYPE DATE USING datum::DATE")
     except: pass
 
 inicijalizacija()
 
-# --- 6. DIJALOZI ZA IZMENU ---
+# --- 6. DIJALOZI ---
 @st.dialog("Izmeni Artikal")
 def izmeni_robu_dialog(row):
     novo = st.text_input("Novi naziv", value=row['naziv'])
@@ -84,7 +74,7 @@ def izmeni_kupca_dialog(row):
 # --- 7. LOGIN ---
 if "auth" not in st.session_state: st.session_state["auth"] = False
 if not st.session_state["auth"]:
-    lozinka = st.text_input("Lozinka:", type="password")
+    lozinka = st.text_input("Šifra:", type="password")
     if st.button("Ulaz"):
         if lozinka == app_pass: st.session_state["auth"] = True; st.rerun()
     st.stop()
@@ -110,13 +100,49 @@ if meni == "Pregled":
         df_p['cena_kurira'] = df_p['cena_kurira'].fillna(0)
         df_p['zarada_sa_postom'] = df_p['neto'] - df_p['cena_kurira']
         
+        # Metrike
         c1, c2, c3 = st.columns(3)
         c1.metric("Neto Prodaja", f"{df_p['neto'].sum():,.2f}")
-        c2.metric("Zarada (Neto - Kurir)", f"{df_p['zarada_sa_postom'].sum():,.2f}")
-        c3.metric("Ukupno Dostava", f"{df_p['cena_kurira'].sum():,.2f}")
+        c2.metric("Čista Zarada", f"{df_p['zarada_sa_postom'].sum():,.2f}")
+        c3.metric("Trošak Pošte", f"{df_p['cena_kurira'].sum():,.2f}")
         
+        # --- ANALITIKA PO OBLASTIMA ---
+        st.subheader("Statistika po oblastima")
+        t1, t2 = st.columns(2)
+        
+        # Kalkulacija po oblastima
+        stats = df_p.groupby('okrug').agg({
+            'neto': 'sum',
+            'kupac': 'nunique'
+        }).rename(columns={'neto': 'Ukupna Prodaja (RSD)', 'kupac': 'Broj Kupaca'})
+        
+        stats['Udeo Prodaje %'] = (stats['Ukupna Prodaja (RSD)'] / stats['Ukupna Prodaja (RSD)'].sum() * 100).round(1)
+        
+        with t1:
+            st.write("**Gde se najviše kupuje (Vrednost)**")
+            st.bar_chart(stats['Ukupna Prodaja (RSD)'])
+            st.dataframe(stats[['Ukupna Prodaja (RSD)', 'Udeo Prodaje %']], use_container_width=True)
+
+        with t2:
+            st.write("**Gde ima najviše kupaca (Broj)**")
+            st.bar_chart(stats['Broj Kupaca'])
+            st.dataframe(stats[['Broj Kupaca']], use_container_width=True)
+
+        # Oblasti bez prodaje
+        sve_oblasti = set(SRBIJA_MAPA.keys())
+        aktivne_oblasti = set(df_p['okrug'].unique())
+        mrtve_oblasti = sve_oblasti - aktivne_oblasti
+        
+        if mrtve_oblasti:
+            st.warning(f"**Oblasti bez prodaje:** {', '.join(mrtve_oblasti)}")
+        else:
+            st.success("Prodaja je aktivna u svim pokrivenim oblastima.")
+
+        st.divider()
+        st.write("**Istorija transakcija:**")
         st.dataframe(df_p, use_container_width=True)
-    else: st.info("Prazno.")
+    else:
+        st.info("Baza je prazna.")
 
 # --- MODUL: NOVA FAKTURA ---
 elif meni == "📝 Nova Faktura":
@@ -143,12 +169,12 @@ elif meni == "📝 Nova Faktura":
                        {"d": d, "ki": kid, "ri": rid, "ko": ko, "b": b, "n": b*(1-rabat/100), "pt": pt, "si": si})
                 st.success("Sačuvano!"); st.rerun()
 
-# --- MODUL: KUPCI (VRAĆENA MAPA I OKRUZI) ---
+# --- MODUL: KUPCI ---
 elif meni == "👥 Kupci":
     st.title("👥 Kupci")
     with st.form("nk"):
         c1, c2, c3 = st.columns(3)
-        i = c1.text_input("Ime firme / Kupca")
+        i = c1.text_input("Ime firme")
         g = c2.selectbox("Grad", SVI_GRADOVI)
         r = c3.number_input("Rabat %", 0.0)
         if st.form_submit_button("Dodaj"):
@@ -168,7 +194,7 @@ elif meni == "👥 Kupci":
 elif meni == "📦 Katalog Robe":
     st.title("📦 Katalog")
     with st.form("nr"):
-        n = st.text_input("Naziv artikla")
+        n = st.text_input("Artikal")
         if st.form_submit_button("Dodaj"):
             izvrsi("INSERT INTO tipovi_robe (naziv) VALUES (:n) ON CONFLICT DO NOTHING", {"n": n})
             st.rerun()
@@ -194,9 +220,9 @@ elif meni == "🚚 Brza Pošta":
         izb = st.selectbox("Služba:", [f"{r['id']} | {r['naziv']}" for _, r in df_s.iterrows()])
         kid = int(izb.split(" | ")[0])
         with st.form("nc"):
-            cena = st.number_input("Nova cena", min_value=0.0)
+            cena = st.number_input("Cena", min_value=0.0)
             dat = st.date_input("Važi od", date.today())
-            if st.form_submit_button("Sačuvaj cenu"):
+            if st.form_submit_button("Sačuvaj"):
                 izvrsi("INSERT INTO kuriri_cene (kurir_id, cena, datum_od) VALUES (:id, :c, :d)", {"id": kid, "c": cena, "d": dat})
                 st.rerun()
         st.write("Istorija cena:")
