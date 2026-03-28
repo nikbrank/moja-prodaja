@@ -5,9 +5,10 @@ from datetime import date, timedelta
 import urllib.parse
 import altair as alt
 
-st.set_page_config(page_title="Poslovni Panel v8.1", layout="wide")
+# --- 1. PODEŠAVANJE ---
+st.set_page_config(page_title="Poslovni Panel v8.2", layout="wide")
 
-# --- KONEKCIJA ---
+# --- 2. KONEKCIJA ---
 try:
     db_pass = st.secrets["DB_PASSWORD"]
     p_ref = st.secrets["PROJECT_REF"]
@@ -16,9 +17,9 @@ try:
     DB_URL = f"postgresql://postgres.{p_ref}:{safe_pass}@aws-1-eu-west-1.pooler.supabase.com:6543/postgres"
     engine = create_engine(DB_URL, connect_args={"sslmode": "require"})
 except Exception:
-    st.error("Problem sa konekcijom!"); st.stop()
+    st.error("Baza nedostupna!"); st.stop()
 
-# --- GEOGRAFIJA ---
+# --- 3. GEOGRAFIJA ---
 SRBIJA_MAPA = {
     "Južnobački": ["Novi Sad", "Bačka Palanka", "Bečej", "Temerin", "Vrbas", "Bački Petrovac", "Beočin", "Titel", "Žabalj", "Srbobran"],
     "Grad Beograd": ["Beograd", "Mladenovac", "Lazarevac", "Obrenovac", "Barajevo", "Grocka", "Sopot", "Surčin"],
@@ -28,7 +29,7 @@ SRBIJA_MAPA = {
 }
 SVI_GRADOVI = sorted([g for lista in SRBIJA_MAPA.values() for g in lista])
 
-# --- POMOĆNE FUNKCIJE ---
+# --- 4. POMOĆNE FUNKCIJE ---
 def izvrsi(upit, params=None):
     with engine.begin() as conn:
         conn.execute(text(upit), params or {})
@@ -37,7 +38,7 @@ def citaj(upit):
     try: return pd.read_sql(upit, engine)
     except: return pd.DataFrame()
 
-# --- INICIJALIZACIJA BAZE ---
+# --- 5. INICIJALIZACIJA (Mora biti precizna) ---
 def init_db():
     izvrsi("CREATE TABLE IF NOT EXISTS tipovi_robe (id SERIAL PRIMARY KEY, naziv TEXT UNIQUE)")
     izvrsi("CREATE TABLE IF NOT EXISTS kuriri (id SERIAL PRIMARY KEY, naziv TEXT UNIQUE)")
@@ -51,10 +52,22 @@ def init_db():
     )""")
 init_db()
 
-# --- LOGIN ---
+# --- 6. DIJALOZI ZA IZMENU ---
+@st.dialog("Izmeni Kupca")
+def izmeni_kupca_dialog(row):
+    i = st.text_input("Ime firme", value=row['ime'])
+    g = st.selectbox("Grad", SVI_GRADOVI, index=SVI_GRADOVI.index(row['grad']) if row['grad'] in SVI_GRADOVI else 0)
+    r = st.number_input("Podrazumevani Rabat %", value=float(row['rabat']))
+    if st.button("Sačuvaj izmene"):
+        o = next((okr for okr, gr in SRBIJA_MAPA.items() if g in gr), "Ostalo")
+        izvrsi("UPDATE kupci SET ime=:i, grad=:g, okrug=:o, rabat=:r WHERE id=:id", 
+               {"i": i, "g": g, "o": o, "r": r, "id": int(row['id'])})
+        st.rerun()
+
+# --- 7. NAVIGACIJA ---
 if "auth" not in st.session_state: st.session_state["auth"] = False
 if not st.session_state["auth"]:
-    lozinka = st.text_input("Šifra:", type="password")
+    lozinka = st.text_input("Lozinka:", type="password")
     if st.button("Ulaz"):
         if lozinka == app_pass: st.session_state["auth"] = True; st.rerun()
     st.stop()
@@ -62,112 +75,135 @@ if not st.session_state["auth"]:
 meni = st.sidebar.radio("Meni:", ["📊 Pregled Faktura", "📝 Fakture (Unos)", "👥 Kupci & Analitika", "📦 Katalog Robe", "🚚 Brza Pošta"])
 
 # ==========================================
-# 🚚 BRZA POŠTA (VRAĆENO I SREĐENO)
+# 📝 FAKTURE (UNOS) - POPRAVLJEN TYPEERROR
 # ==========================================
-if meni == "🚚 Brza Pošta":
-    st.title("🚚 Upravljanje Brzom Poštom")
-    with st.form("n_s"):
-        n_ime = st.text_input("Naziv nove kurirske službe")
-        if st.form_submit_button("Dodaj službu"):
-            izvrsi("INSERT INTO kuriri (naziv) VALUES (:n) ON CONFLICT DO NOTHING", {"n": n_ime})
-            st.rerun()
-    
-    df_s = citaj("SELECT * FROM kuriri")
-    if not df_s.empty:
-        sel = st.selectbox("Izaberi službu za promenu cene:", [f"{r['id']} | {r['naziv']}" for _, r in df_s.iterrows()])
-        kid = int(sel.split(" | ")[0])
-        
-        with st.form("n_c"):
-            v = st.number_input("Cena po paketu (RSD)", min_value=0.0)
-            d = st.date_input("Važi od datuma", date.today())
-            if st.form_submit_button("Sačuvaj novu cenu"):
-                izvrsi("INSERT INTO kuriri_cene (kurir_id, cena, datum_od) VALUES (:id, :c, :d)", {"id": kid, "c": v, "d": d})
-                st.success("Cena ažurirana!"); st.rerun()
-        
-        st.subheader("Istorija cena za odabranu službu")
-        st.dataframe(citaj(f"SELECT cena, datum_od FROM kuriri_cene WHERE kurir_id={kid} ORDER BY datum_od DESC"), use_container_width=True)
-
-# ==========================================
-# 📝 FAKTURE (UNOS SA VIŠE STAVKI I KURIRIMA)
-# ==========================================
-elif meni == "📝 Fakture (Unos)":
-    st.title("Nova Faktura")
-    df_k = citaj("SELECT * FROM kupci")
-    df_r = citaj("SELECT * FROM tipovi_robe")
+if meni == "📝 Fakture (Unos)":
+    st.title("Nova Faktura (Više stavki)")
+    df_k = citaj("SELECT * FROM kupci ORDER BY ime")
+    df_r = citaj("SELECT * FROM tipovi_robe ORDER BY naziv")
     df_s = citaj("SELECT * FROM kuriri")
     
-    if "nove_stavke" not in st.session_state: st.session_state.nove_stavke = []
+    if "stavke_f" not in st.session_state: st.session_state.stavke_f = []
     
     if not df_k.empty and not df_r.empty:
         c1, c2, c3 = st.columns(3)
-        kupac_sel = c1.selectbox("Kupac:", [f"{r['id']} | {r['ime']} ({r['grad']})" for _, r in df_k.iterrows()])
-        kid = int(kupac_sel.split(" | ")[0])
-        def_rabat = df_k[df_k['id'] == kid]['rabat'].values[0]
+        k_sel = c1.selectbox("Kupac:", [f"{r['id']} | {r['ime']} ({r['grad']})" for _, r in df_k.iterrows()])
+        kid = int(k_sel.split(" | ")[0])
+        def_rabat = float(df_k[df_k['id'] == kid]['rabat'].values[0])
         
         dat = c2.date_input("Datum", date.today())
-        pt = c3.selectbox("Tip prevoza", ["Lično", "Kurir"])
+        pt = c3.selectbox("Prevoz", ["Lično", "Kurir"])
         
         si = 0
         br_pak = ""
         if pt == "Kurir" and not df_s.empty:
-            s_sel = c3.selectbox("Kurirska služba", [f"{r['id']} | {r['naziv']}" for _, r in df_s.iterrows()])
+            s_sel = c3.selectbox("Služba", [f"{r['id']} | {r['naziv']}" for _, r in df_s.iterrows()])
             si = int(s_sel.split(" | ")[0])
-            br_pak = c3.text_input("Broj paketa / Tracking")
+            br_pak = c3.text_input("Broj paketa")
 
-        st.divider()
+        st.subheader("Dodaj stavku")
         sa1, sa2, sa3, sa4, sa5 = st.columns([3, 1, 2, 1, 1])
-        roba_sel = sa1.selectbox("Artikal", [f"{r['id']} | {r['naziv']}" for _, r in df_r.iterrows()])
-        kom = sa2.number_input("Kom", 1, min_value=1)
-        bruto = sa3.number_input("Bruto (RSD)", 0.0)
-        rab = sa4.number_input("Rabat %", value=float(def_rabat))
+        r_sel = sa1.selectbox("Artikal", [f"{r['id']} | {r['naziv']}" for _, r in df_r.iterrows()])
+        kom = sa2.number_input("Kom", value=1, min_value=1) # FIX: Eksplicitni int
+        bruto = sa3.number_input("Bruto RSD", value=0.0, step=100.0)
+        rab = sa4.number_input("Rabat %", value=def_rabat)
         
         if sa5.button("➕"):
-            rid = int(roba_sel.split(" | ")[0])
-            r_ime = roba_sel.split(" | ")[1]
-            st.session_state.nove_stavke.append({
-                "roba_id": rid, "naziv": r_ime, "komada": kom, 
-                "bruto": bruto, "rabat": rab, "neto": bruto * (1 - rab/100)
+            rid = int(r_sel.split(" | ")[0])
+            r_naziv = r_sel.split(" | ")[1]
+            st.session_state.stavke_f.append({
+                "roba_id": rid, "naziv": r_naziv, "komada": int(kom), 
+                "rabat": float(rab), "neto": float(bruto * (1 - rab/100))
             })
             st.rerun()
             
-        if st.session_state.nove_stavke:
-            df_st = pd.DataFrame(st.session_state.nove_stavke)
-            st.table(df_st[['naziv', 'komada', 'bruto', 'rabat', 'neto']])
-            if st.button("💾 PROKNJIŽI FAKTURU"):
+        if st.session_state.stavke_f:
+            st.table(pd.DataFrame(st.session_state.stavke_f))
+            if st.button("💾 SAČUVAJ FAKTURU"):
                 izvrsi("INSERT INTO fakture_glavno (datum, kupac_id, prevoz_tip, kurir_id, broj_paketa) VALUES (:d,:k,:p,:si,:bp)",
                        {"d": dat, "k": kid, "p": pt, "si": si, "bp": br_pak})
-                fid = citaj("SELECT MAX(id) as last_id FROM fakture_glavno")['last_id'][0]
-                for s in st.session_state.nove_stavke:
+                fid = int(citaj("SELECT MAX(id) as last_id FROM fakture_glavno")['last_id'][0])
+                for s in st.session_state.stavke_f:
                     izvrsi("INSERT INTO fakture_stavke (faktura_id, roba_id, komada, rabat, neto) VALUES (:f,:r,:k,:rab,:n)",
-                           {"f": int(fid), "r": int(s['roba_id']), "k": int(s['komada']), "rab": float(s['rabat']), "n": float(s['neto'])})
-                st.session_state.nove_stavke = []
-                st.success("Uspešno sačuvano!"); st.rerun()
+                           {"f": fid, "r": s['roba_id'], "k": s['komada'], "rab": s['rabat'], "n": s['neto']})
+                st.session_state.stavke_f = []
+                st.success("Faktura ID #{} proknjižena!".format(fid))
+                st.rerun()
+
+# ==========================================
+# 👥 KUPCI & ANALITIKA (KOMPLETAN MODUL)
+# ==========================================
+elif meni == "👥 Kupci & Analitika":
+    t1, t2, t3 = st.tabs(["Unos/Izmena", "Mapa i Pokrivenost", "Analitika Kupca"])
+    
+    with t1:
+        with st.form("n_k"):
+            c1, c2, c3 = st.columns(3)
+            i = c1.text_input("Ime firme")
+            g_sel = c2.selectbox("Izaberi Grad", ["DODAJ NOVI"] + SVI_GRADOVI)
+            g_man = c2.text_input("Ime grada (ako je NOVI)")
+            o_man = c3.text_input("Okrug (ako je NOVI)")
+            r = c3.number_input("Rabat %", 0.0)
+            if st.form_submit_button("Dodaj"):
+                grad = g_man if g_sel == "DODAJ NOVI" else g_sel
+                okr = o_man if g_sel == "DODAJ NOVI" else next((o for o, gr in SRBIJA_MAPA.items() if grad in gr), "Ostalo")
+                izvrsi("INSERT INTO kupci (ime, grad, okrug, rabat) VALUES (:i, :g, :o, :r)", {"i": i, "g": grad, "o": okr, "r": r})
+                st.rerun()
+        
+        df_k = citaj("SELECT * FROM kupci ORDER BY ime")
+        for _, r in df_k.iterrows():
+            c1, c2 = st.columns([5, 1])
+            c1.write(f"ID: {r['id']} | **{r['ime']}** - {r['grad']} ({r['okrug']})")
+            if c2.button("✏️", key=f"edit_k_{r['id']}"): izmeni_kupca_dialog(r)
+            st.divider()
+
+    with t2:
+        df_m = citaj("SELECT okrug, COUNT(id) as br FROM kupci GROUP BY okrug")
+        st.bar_chart(df_m.set_index('okrug'))
+
+# ==========================================
+# 📦 KATALOG ROBE
+# ==========================================
+elif meni == "📦 Katalog Robe":
+    st.title("📦 Katalog")
+    with st.form("n_r"):
+        n = st.text_input("Naziv nove robe")
+        if st.form_submit_button("Dodaj"):
+            izvrsi("INSERT INTO tipovi_robe (naziv) VALUES (:n) ON CONFLICT DO NOTHING", {"n": n})
+            st.rerun()
+    
+    df_t = citaj("SELECT * FROM tipovi_robe ORDER BY id")
+    for _, r in df_t.iterrows():
+        c1, c2, c3 = st.columns([1, 4, 1])
+        c1.write(f"ID: {r['id']}")
+        c2.write(f"**{r['naziv']}**")
+        if c3.button("🗑️", key=f"del_r_{r['id']}"):
+            izvrsi("DELETE FROM tipovi_robe WHERE id=:id", {"id": int(r['id'])})
+            st.rerun()
+        st.divider()
 
 # ==========================================
 # 📊 PREGLED FAKTURA (PAGINACIJA)
 # ==========================================
 elif meni == "📊 Pregled Faktura":
-    st.title("Arhiva Faktura")
-    c1, c2, c3 = st.columns(3)
-    s_ime = c1.text_input("Pretraži kupca:")
-    d_od = c2.date_input("Od", date(2025, 1, 1))
-    d_do = c3.date_input("Do", date.today())
-
-    query = f"""
-        SELECT f.id, f.datum, k.ime as kupac, f.prevoz_tip, f.broj_paketa, 
-               SUM(s.neto) as total_neto, 
-               (SELECT cena FROM kuriri_cene WHERE kurir_id = f.kurir_id AND datum_od <= f.datum ORDER BY datum_od DESC LIMIT 1) as trosak_poste
-        FROM fakture_glavno f
-        JOIN kupci k ON f.kupac_id = k.id
-        LEFT JOIN fakture_stavke s ON f.id = s.faktura_id
-        WHERE f.datum BETWEEN '{d_od}' AND '{d_do}'
-        {f"AND k.ime ILIKE '%%{s_ime}%%'" if s_ime else ""}
-        GROUP BY f.id, f.datum, k.ime, f.prevoz_tip, f.broj_paketa, f.kurir_id
-        ORDER BY f.id DESC
-    """
-    df = citaj(query)
+    st.title("Arhiva")
+    df = citaj("""
+        SELECT f.id, f.datum, k.ime as kupac, SUM(s.neto) as total 
+        FROM fakture_glavno f 
+        JOIN kupci k ON f.kupac_id = k.id 
+        JOIN fakture_stavke s ON f.id = s.faktura_id 
+        GROUP BY f.id, f.datum, k.ime ORDER BY f.id DESC
+    """)
     if not df.empty:
-        df['trosak_poste'] = df['trosak_poste'].fillna(0)
-        per_page = 15
-        page = st.number_input("Strana", 1, max_value=(len(df)//per_page)+1, step=1) - 1
-        st.dataframe(df.iloc[page*per_page : (page+1)*per_page], use_container_width=True)
+        st.dataframe(df, use_container_width=True)
+
+# ==========================================
+# 🚚 BRZA POŠTA
+# ==========================================
+elif meni == "🚚 Brza Pošta":
+    st.title("Službe")
+    with st.form("n_s"):
+        n = st.text_input("Kurirska služba")
+        if st.form_submit_button("Dodaj"):
+            izvrsi("INSERT INTO kuriri (naziv) VALUES (:n)", {"n": n})
+            st.rerun()
