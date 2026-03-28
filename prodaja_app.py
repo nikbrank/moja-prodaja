@@ -5,7 +5,7 @@ from datetime import date
 import urllib.parse
 
 # --- 1. PODEŠAVANJE STRANICE ---
-st.set_page_config(page_title="Poslovni Panel v4.6 - FULL", layout="wide")
+st.set_page_config(page_title="Poslovni Panel v4.7 - FULL", layout="wide")
 
 # --- 2. POVEZIVANJE (Secrets) ---
 try:
@@ -81,7 +81,7 @@ izvrsi("CREATE TABLE IF NOT EXISTS tipovi_robe (id SERIAL PRIMARY KEY, naziv TEX
 izvrsi("CREATE TABLE IF NOT EXISTS prodaja (id SERIAL PRIMARY KEY, datum TEXT, kupac TEXT, roba TEXT, komada INTEGER, bruto REAL, neto REAL)")
 
 # --- 6. NAVIGACIJA ---
-st.sidebar.title("🏢 Cloud Panel v4.6")
+st.sidebar.title("🏢 Cloud Panel v4.7")
 meni = st.sidebar.radio("Meni:", ["📊 Dashboard", "📝 Nova Faktura", "👥 Kupci", "📦 Katalog Robe"])
 
 # --- MODUL: DASHBOARD ---
@@ -134,10 +134,10 @@ elif meni == "📝 Nova Faktura":
     else:
         st.warning("Prvo popunite kupce i katalog robe.")
 
-# --- MODUL: KUPCI ---
+# --- MODUL: KUPCI (SA TRI TABA) ---
 elif meni == "👥 Kupci":
     st.title("👥 Baza Kupaca i Geografija")
-    t1, t2 = st.tabs(["➕ Dodaj Kupca", "🔍 Pregled i Brisanje"])
+    t1, t2, t3 = st.tabs(["➕ Dodaj Kupca", "🔍 Lista i Brisanje", "🗺️ Distribucija po okruzima"])
     
     with t1:
         with st.form("novi_k_form", clear_on_submit=True):
@@ -154,16 +154,29 @@ elif meni == "👥 Kupci":
                 st.rerun()
 
     with t2:
-        df_k = citaj("kupci", "okrug ASC")
+        df_k = citaj("kupci", "ime ASC")
         if not df_k.empty:
-            st.subheader("Distribucija po okruzima")
-            okruzi_count = df_k['okrug'].value_counts()
-            st.bar_chart(okruzi_count)
+            st.subheader("Kompletna lista")
             st.dataframe(df_k[['ime', 'grad', 'okrug', 'rabat']], use_container_width=True)
+            
+            st.markdown("---")
             k_bris = st.selectbox("Izaberi kupca za brisanje:", df_k['ime'])
             if st.button("❌ Obriši kupca"):
                 izvrsi("DELETE FROM kupci WHERE ime = :i", {"i": k_bris})
                 st.rerun()
+        else:
+            st.info("Nema unetih kupaca.")
+
+    with t3:
+        df_k_mapa = citaj("kupci")
+        if not df_k_mapa.empty:
+            st.subheader("Statistika po okruzima")
+            okruzi_count = df_k_mapa['okrug'].value_counts()
+            st.bar_chart(okruzi_count)
+            st.write("Broj kupaca po regionima:")
+            st.write(okruzi_count)
+        else:
+            st.info("Nema podataka za prikaz distribucije.")
 
 # --- MODUL: KATALOG ROBE ---
 elif meni == "📦 Katalog Robe":
