@@ -5,7 +5,7 @@ from datetime import date
 import urllib.parse
 
 # --- 1. PODEŠAVANJE STRANICE ---
-st.set_page_config(page_title="Poslovni Panel v4.9 - FULL", layout="wide")
+st.set_page_config(page_title="Poslovni Panel v5.1 - FINAL", layout="wide")
 
 # --- 2. POVEZIVANJE (Secrets) ---
 try:
@@ -16,8 +16,7 @@ try:
     DB_URL = f"postgresql://postgres.{p_ref}:{safe_pass}@aws-1-eu-west-1.pooler.supabase.com:6543/postgres"
     engine = create_engine(DB_URL, connect_args={"sslmode": "require"})
 except KeyError as e:
-    st.error(f"Greška u Secrets: {e}")
-    st.stop()
+    st.error(f"Greška u Secrets: {e}"); st.stop()
 
 # --- 3. LOGIN SISTEM ---
 if "auth" not in st.session_state:
@@ -34,7 +33,7 @@ if not st.session_state["auth"]:
             st.error("Netačna lozinka!")
     st.stop()
 
-# --- 4. GEOGRAFIJA SRBIJE (KOMPLETNA LISTA) ---
+# --- 4. GEOGRAFIJA SRBIJE ---
 SRBIJA_MAPA = {
     "Severnobački": ["Subotica", "Bačka Topola", "Mali Iđoš"],
     "Srednjebanatski": ["Zrenjanin", "Novi Bečej", "Sečanj", "Žitište", "Nova Crnja"],
@@ -81,7 +80,7 @@ izvrsi("CREATE TABLE IF NOT EXISTS tipovi_robe (id SERIAL PRIMARY KEY, naziv TEX
 izvrsi("CREATE TABLE IF NOT EXISTS prodaja (id SERIAL PRIMARY KEY, datum TEXT, kupac TEXT, roba TEXT, komada INTEGER, bruto REAL, neto REAL)")
 
 # --- 6. NAVIGACIJA ---
-st.sidebar.title("🏢 Cloud Panel v4.9")
+st.sidebar.title("🏢 Cloud Panel v5.1")
 meni = st.sidebar.radio("Meni:", ["📊 Dashboard", "📝 Nova Faktura", "👥 Kupci", "📦 Katalog Robe"])
 
 # --- MODUL: DASHBOARD ---
@@ -104,7 +103,7 @@ if meni == "📊 Dashboard":
         st.subheader("📜 Istorija svih prodaja")
         st.dataframe(df_p, use_container_width=True)
     else:
-        st.info("Baza je trenutno prazna. Unesite prvu prodaju.")
+        st.info("Baza je trenutno prazna.")
 
 # --- MODUL: NOVA FAKTURA ---
 elif meni == "📝 Nova Faktura":
@@ -116,24 +115,18 @@ elif meni == "📝 Nova Faktura":
         with st.form("faktura_form", clear_on_submit=True):
             c1, c2 = st.columns(2)
             dat = c1.date_input("Datum", date.today())
-            # Prikazujemo i grad u selectbox-u da bi razlikovali iste firme u različitim gradovima
             lista_k = [f"{r['ime']} | {r['grad']}" for i, r in df_k.iterrows()]
             izabran_k_pun = c1.selectbox("Izaberi Kupca (Ime | Grad)", lista_k)
             
-            delovi = izabran_k_pun.split(" | ")
-            ime_firme = delovi[0]
-            grad_firme = delovi[1]
-            
+            ime_firme, grad_firme = izabran_k_pun.split(" | ")
             tip = c2.selectbox("Roba / Artikal", df_t['naziv'])
             kom = c2.number_input("Količina (komada)", min_value=1)
             izn = c1.number_input("Bruto Iznos (RSD)", min_value=0.0)
             
-            # Dohvatanje rabata za specifičnu firmu u specifičnom gradu
             r_val = df_k[(df_k['ime'] == ime_firme) & (df_k['grad'] == grad_firme)]['rabat'].values[0]
             
             if st.form_submit_button("✅ Sačuvaj Prodaju"):
                 neto_v = izn * (1 - r_val/100)
-                # U prodaju upisujemo "Ime (Grad)" da bi u istoriji bilo jasno o kome se radi
                 kupac_za_bazu = f"{ime_firme} ({grad_firme})"
                 izvrsi("INSERT INTO prodaja (datum, kupac, roba, komada, bruto, neto) VALUES (:d, :k, :r, :ko, :b, :n)",
                        {"d": str(dat), "k": kupac_za_bazu, "r": tip, "ko": kom, "b": izn, "n": neto_v})
@@ -141,7 +134,7 @@ elif meni == "📝 Nova Faktura":
     else:
         st.warning("Prvo popunite kupce i katalog robe.")
 
-# --- MODUL: KUPCI (LOGIKA ISTO IME - RAZLIČIT GRAD) ---
+# --- MODUL: KUPCI ---
 elif meni == "👥 Kupci":
     st.title("👥 Upravljanje Kupcima")
     t1, t2, t3, t4 = st.tabs(["➕ Dodaj", "🔍 Lista i Brisanje", "✏️ Izmeni", "🗺️ Mapa"])
@@ -154,32 +147,28 @@ elif meni == "👥 Kupci":
             rabat_k = c1.number_input("Rabat (%)", min_value=0.0)
             
             if st.form_submit_button("Sačuvaj Kupca"):
-                # Validacija
                 if grad_k == "--- Izaberite grad ---" or not ime_k.strip():
-                    st.error("Greška: Morate uneti naziv i izabrati grad!")
+                    st.error("Morate uneti naziv i izabrati grad!")
                 else:
-                    # Provera da li već postoji ISTO IME u ISTOM GRADU
                     df_check = citaj("kupci")
-                    postoji = not df_check[(df_check['ime'].str.lower() == ime_k.strip().lower()) & 
-                                          (df_check['grad'] == grad_k)].empty
-                    
+                    postoji = not df_check[(df_check['ime'].str.lower() == ime_k.strip().lower()) & (df_check['grad'] == grad_k)].empty
                     if postoji:
-                        st.error(f"Greška: Firma '{ime_k}' već postoji u gradu {grad_k}!")
+                        st.error(f"Firma '{ime_k}' već postoji u gradu {grad_k}!")
                     else:
                         okrug_k = next((o for o, g in SRBIJA_MAPA.items() if grad_k in g), "Ostalo")
                         izvrsi("INSERT INTO kupci (ime, grad, okrug, rabat) VALUES (:i, :g, :o, :r)", 
                                {"i": ime_k.strip(), "g": grad_k, "o": okrug_k, "r": rabat_k})
-                        st.success(f"Kupac '{ime_k}' iz grada {grad_k} je dodat!")
+                        st.success("Kupac dodat!")
                         st.rerun()
 
     with t2:
         df_k = citaj("kupci", "ime ASC")
         if not df_k.empty:
-            st.dataframe(df_k[['ime', 'grad', 'okrug', 'rabat']], use_container_width=True)
-            k_za_brisanje = st.selectbox("Izaberi koga brišeš:", [f"{r['ime']} | {r['grad']}" for i, r in df_k.iterrows()])
-            if st.button("❌ Obriši trajno"):
-                b_ime, b_grad = k_za_brisanje.split(" | ")
-                izvrsi("DELETE FROM kupci WHERE ime = :i AND grad = :g", {"i": b_ime, "g": b_grad})
+            st.info("💡 Da obrišeš kupca: Označi red i pritisni 'Delete' na tastaturi ili ikonu kante u tabeli.")
+            izmenjeni_df = st.data_editor(df_k, use_container_width=True, num_rows="dynamic", key="tab_k", disabled=["ime", "grad", "okrug", "rabat"])
+            if len(izmenjeni_df) < len(df_k):
+                obrisani_id = list(set(df_k['id']) - set(izmenjeni_df['id']))
+                for oid in obrisani_id: izvrsi("DELETE FROM kupci WHERE id = :id", {"id": int(oid)})
                 st.rerun()
         else:
             st.info("Nema kupaca.")
@@ -187,53 +176,37 @@ elif meni == "👥 Kupci":
     with t3:
         df_k_edit = citaj("kupci", "ime ASC")
         if not df_k_edit.empty:
-            k_identitet = st.selectbox("Izaberi kupca za promenu:", [f"{r['ime']} | {r['grad']}" for i, r in df_k_edit.iterrows()])
-            e_ime, e_grad = k_identitet.split(" | ")
-            podaci_k = df_k_edit[(df_k_edit['ime'] == e_ime) & (df_k_edit['grad'] == e_grad)].iloc[0]
-            
-            with st.form("edit_k_form"):
-                novo_ime = st.text_input("Novo ime", value=podaci_k['ime'])
-                novi_grad = st.selectbox("Novi grad", LISTA_ZA_SELECT, index=LISTA_ZA_SELECT.index(podaci_k['grad']) if podaci_k['grad'] in LISTA_ZA_SELECT else 0)
-                novi_rabat = st.number_input("Novi rabat %", value=float(podaci_k['rabat']))
-                
-                if st.form_submit_button("💾 Sačuvaj izmene"):
-                    if novi_grad == "--- Izaberite grad ---":
-                        st.error("Izaberite grad!")
-                    else:
-                        # Provera duplikata pri izmeni (da ne preklopi drugu postojeću firmu u istom gradu)
-                        duplikat = not df_k_edit[(df_k_edit['ime'].str.lower() == novo_ime.strip().lower()) & 
-                                               (df_k_edit['grad'] == novi_grad) & 
-                                               (df_k_edit['id'] != int(podaci_k['id']))].empty
-                        if duplikat:
-                            st.error(f"Ne možete preimenovati u '{novo_ime}' jer ta firma već postoji u gradu {novi_grad}!")
-                        else:
-                            novi_okrug = next((o for o, g in SRBIJA_MAPA.items() if novi_grad in g), "Ostalo")
-                            izvrsi("UPDATE kupci SET ime=:i, grad=:g, okrug=:o, rabat=:r WHERE id=:id",
-                                   {"i": novo_ime.strip(), "g": novi_grad, "o": novi_okrug, "r": novi_rabat, "id": int(podaci_k['id'])})
-                            st.success("Izmene sačuvane!")
-                            st.rerun()
-        else:
-            st.info("Baza je prazna.")
+            k_sel = st.selectbox("Izaberi za promenu:", [f"{r['ime']} | {r['grad']}" for i, r in df_k_edit.iterrows()])
+            e_ime, e_grad = k_sel.split(" | ")
+            podaci = df_k_edit[(df_k_edit['ime'] == e_ime) & (df_k_edit['grad'] == e_grad)].iloc[0]
+            with st.form("edit_k"):
+                n_ime = st.text_input("Novo ime", value=podaci['ime'])
+                n_grad = st.selectbox("Novi grad", LISTA_ZA_SELECT, index=LISTA_ZA_SELECT.index(podaci['grad']))
+                n_rab = st.number_input("Novi rabat %", value=float(podaci['rabat']))
+                if st.form_submit_button("Sačuvaj"):
+                    n_okrug = next((o for o, g in SRBIJA_MAPA.items() if n_grad in g), "Ostalo")
+                    izvrsi("UPDATE kupci SET ime=:i, grad=:g, okrug=:o, rabat=:r WHERE id=:id",
+                           {"i": n_ime.strip(), "g": n_grad, "o": n_okrug, "r": n_rab, "id": int(podaci['id'])})
+                    st.success("Osveženo!"); st.rerun()
 
     with t4:
         df_k_mapa = citaj("kupci")
-        if not df_k_mapa.empty:
-            okruzi_count = df_k_mapa['okrug'].value_counts()
-            st.bar_chart(okruzi_count)
+        if not df_k_mapa.empty: st.bar_chart(df_k_mapa['okrug'].value_counts())
 
 # --- MODUL: KATALOG ROBE ---
 elif meni == "📦 Katalog Robe":
     st.title("📦 Katalog")
-    with st.form("katalog_form", clear_on_submit=True):
-        n_a = st.text_input("Naziv artikla (Bočna fioka, Džambo šina, Korpa za veš...)")
-        if st.form_submit_button("Dodaj u Katalog"):
+    with st.form("kat_form", clear_on_submit=True):
+        n_a = st.text_input("Naziv artikla")
+        if st.form_submit_button("Dodaj"):
             izvrsi("INSERT INTO tipovi_robe (naziv) VALUES (:n) ON CONFLICT DO NOTHING", {"n": n_a.strip()})
             st.rerun()
     
     df_t = citaj("tipovi_robe", "naziv ASC")
-    st.dataframe(df_t, use_container_width=True)
     if not df_t.empty:
-        r_bris = st.selectbox("Izaberi artikal za uklanjanje:", df_t['naziv'])
-        if st.button("🗑️ Obriši artikal"):
-            izvrsi("DELETE FROM tipovi_robe WHERE naziv = :n", {"n": r_bris})
+        st.info("💡 Brisanje artikala se vrši direktno u tabeli (kanta/delete).")
+        izmenjeni_t = st.data_editor(df_t, use_container_width=True, num_rows="dynamic", key="tab_t", disabled=["naziv"])
+        if len(izmenjeni_t) < len(df_t):
+            obrisani_tid = list(set(df_t['id']) - set(izmenjeni_t['id']))
+            for tid in obrisani_tid: izvrsi("DELETE FROM tipovi_robe WHERE id = :id", {"id": int(tid)})
             st.rerun()
