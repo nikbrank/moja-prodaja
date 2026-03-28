@@ -5,7 +5,7 @@ from datetime import date
 import urllib.parse
 
 # --- 1. PODEŠAVANJE STRANICE ---
-st.set_page_config(page_title="Poslovni Panel v4.5 - FULL", layout="wide")
+st.set_page_config(page_title="Poslovni Panel v4.6 - FULL", layout="wide")
 
 # --- 2. POVEZIVANJE (Secrets) ---
 try:
@@ -16,20 +16,21 @@ try:
     DB_URL = f"postgresql://postgres.{p_ref}:{safe_pass}@aws-1-eu-west-1.pooler.supabase.com:6543/postgres"
     engine = create_engine(DB_URL, connect_args={"sslmode": "require"})
 except KeyError as e:
-    st.error(f"Greška u Secrets: {e}"); st.stop()
+    st.error(f"Greška u Secrets: {e}")
+    st.stop()
 
 # --- 3. LOGIN SISTEM ---
-if "auth" not in st.session_state: 
+if "auth" not in st.session_state:
     st.session_state["auth"] = False
 
 if not st.session_state["auth"]:
     st.title("🔐 Privatni Cloud Panel")
     lozinka = st.text_input("Lozinka za pristup:", type="password")
     if st.button("Prijavi se"):
-        if lozinka == app_pass: 
+        if lozinka == app_pass:
             st.session_state["auth"] = True
             st.rerun()
-        else: 
+        else:
             st.error("Netačna lozinka!")
     st.stop()
 
@@ -56,27 +57,4 @@ SRBIJA_MAPA = {
     "Rasinski": ["Kruševac", "Aleksandrovac", "Brus", "Varvarin", "Trstenik", "Ćićevac"],
     "Nišavski": ["Niš", "Aleksinac", "Svrljig", "Merošina", "Ražanj", "Doljevac", "Gadžin Han"],
     "Toplički": ["Prokuplje", "Blace", "Kuršumlija", "Žitorađa"],
-    "Pirotski": ["Pirot", "Bela Palanka", "Dimitrovgrad", "Babušnica"],
-    "Jablanički": ["Leskovac", "Vlasotince", "Lebane", "Bojnik", "Medveđa", "Crna Trava"],
-    "Pčinjski": ["Vranje", "Bujanovac", "Preševo", "Surdulica", "Vladičin Han", "Trgovište", "Bosilegrad"],
-    "Kosovski/Metohijski": ["Priština", "Prizren", "Peć", "Kosovska Mitrovica", "Gnjilane", "Đakovica", "Uroševac"],
-    "Grad Beograd": ["Beograd", "Mladenovac", "Lazarevac", "Obrenovac", "Barajevo", "Grocka", "Sopot", "Surčin"]
-}
-SVI_GRADOVI = sorted(list(set([g for lista in SRBIJA_MAPA.values() for g in lista])))
-
-# --- 5. POMOĆNE FUNKCIJE ZA BAZU ---
-def izvrsi(upit, params=None):
-    with engine.begin() as conn: 
-        conn.execute(text(upit), params or {})
-
-def citaj(tabela, order_by=None):
-    upit = f"SELECT * FROM {tabela}"
-    if order_by: upit += f" ORDER BY {order_by}"
-    return pd.read_sql(upit, engine)
-
-# Kreiranje tabela ako ne postoje
-izvrsi("""
-    CREATE TABLE IF NOT EXISTS kupci (id SERIAL PRIMARY KEY, ime TEXT, grad TEXT, okrug TEXT, rabat REAL);
-    CREATE TABLE IF NOT EXISTS tipovi_robe (id SERIAL PRIMARY KEY, naziv TEXT UNIQUE);
-    CREATE TABLE IF NOT EXISTS prodaja (
-        id SERIAL PRIMARY KEY, datum TEXT, kupac TEXT,
+    "Pirotski": ["Pirot", "Bela Pal
